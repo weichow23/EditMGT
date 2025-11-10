@@ -1,0 +1,21 @@
+PYTHON_PATH='./' accelerate launch --multi_gpu --gpu_ids '0,1,2,3,4,5,6,7' --main_process_port 25012 --num_processes 8 train/train.py \
+    --train_edit_model True \
+    --output_dir  "./runs/editmgt" \
+    --train_batch_size 4 \
+    --gradient_accumulation_steps 8 \
+    --learning_rate 1e-4 \
+    --max_grad_norm 10 \
+    --pretrained_model_name_or_path "MeissonFlow/Meissonic" \
+    --text_encoder_architecture 'CLIP_Gemma2' \
+    --instance_dataset "HDFSEditParquetDataset" \
+    --instance_data_dir  "/home/user/" \
+    --resume_from_checkpoint "latest" \
+    --resolution 1024 \
+    --mixed_precision no \
+    --lr_scheduler constant \
+    --use_8bit_adam \
+    --max_train_steps 500000 \
+    --checkpointing_steps 200 \
+    --validation_steps 2000000000 \
+    --report_to 'wandb' \
+    --logging_steps 10
