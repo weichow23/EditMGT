@@ -13,7 +13,7 @@ Wei Chow<sup>1,*</sup>, Linfeng Li<sup>1,*</sup>, Lingdong Kong<sup>1</sup>, Zef
 [![Dataset](https://img.shields.io/badge/🤗%20CrispEdit2M-Dataset-yellow)](https://huggingface.co/datasets/WeiChow/CrispEdit-2M)
 [![Checkpoint](https://img.shields.io/badge/🧨%20EditMGT-CKPT-blue)](https://huggingface.co/WeiChow/EditMGT)
 [![GitHub](https://img.shields.io/badge/GitHub-Repo-181717?logo=github)](https://github.com/weichow23/editmgt/tree/main)
-[![Page](https://img.shields.io/badge/🏠%20Home-Page-b3.svg)](https://weichow23.github.io/editmgt/)
+[![Page](https://img.shields.io/badge/🏠%20Home-Page-b3.svg)](https://weichow23.github.io/EditMGT/)
 </div>
 
 ## 🚀 Project Introduction
