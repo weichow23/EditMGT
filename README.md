@@ -1,5 +1,4 @@
 <h1 align="center" style="line-height: 50px;">
-  <img src='https://weichow23.github.io/editmgt/static/images/icon.png' width="7%" height="auto" style="vertical-align: middle;">
   ✨ EditMGT: Unleashing the Potential of Masked Generative Transformer in Image Editing ✨
 </h1>
 
@@ -151,7 +150,12 @@ This project is licensed under the `CCBY-4.0` License. See `LICENSE` for details
 
 ## 📑 Citation
 ```
-
+@article{chow2025editmgt,
+  title={EditMGT: Unleashing Potentials of Masked Generative Transformers in Image Editing},
+  author={Chow, Wei and Li, Linfeng and Kong, Lingdong and Li, Zefeng and Xu, Qi and Song, Hang and Ye, Tian and Wang, Xian and Bai, Jinbin and Xu, Shilin and others},
+  journal={arXiv preprint arXiv:2512.11715},
+  year={2025}
+}
 ```
 
 ## 🙏 Acknowledgements
