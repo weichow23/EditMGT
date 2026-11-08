@@ -74,11 +74,13 @@ def restore_rng(state):
         torch.cuda.set_rng_state(state['cuda'].cpu())
 
 
-def training_state(acc, models, optimizers, schedulers):
-    return dict(kind=CHECKPOINT_KIND, update_rule=UPDATE_RULE,
+def training_state(acc, models, optimizers, schedulers, extensions=None):
+    state=dict(kind=CHECKPOINT_KIND, update_rule=UPDATE_RULE,
                 models={k: acc.unwrap_model(v).state_dict() for k, v in models.items()},
                 optimizers={k: v.state_dict() for k, v in optimizers.items()},
                 schedulers={k: v.state_dict() for k, v in schedulers.items()})
+    if extensions is not None:state['loss_state']=extensions.state_dict()
+    return state
 
 
 def state_digest(value):
@@ -105,13 +107,16 @@ def state_digest(value):
     return digest.hexdigest()
 
 
-def save_checkpoint(acc, out, step, consumed, config, models, optimizers, schedulers):
+def save_checkpoint(acc, out, step, consumed, config, models, optimizers, schedulers, extensions=None):
     out = Path(out)
     path, temporary = out / f'checkpoint-{step}', out / f'.checkpoint-{step}.incomplete'
     progress = dict(kind=CHECKPOINT_KIND, update_rule=UPDATE_RULE,
                     global_step=step, consumed_batches=consumed,
                     microbatches_per_update=microbatches_per_update(config),
                     world_size=acc.num_processes, config=config, rng=rng_state())
+    if extensions is not None:
+        progress['loss_rank_state']=extensions.rank_state()
+        extensions.validate_state(extensions.state_dict(),progress['loss_rank_state'],step)
     collective_call(acc, lambda: validate_progress(progress, config, acc.num_processes, step))
 
     def begin():
@@ -120,7 +125,7 @@ def save_checkpoint(acc, out, step, consumed, config, models, optimizers, schedu
         temporary.mkdir(parents=True)
     collective_call(acc, begin, main_only=True)
     # Main owns common state; every rank owns its RNG/progress. No SFT optimizer is read.
-    collective_call(acc, lambda: torch.save(training_state(acc, models, optimizers, schedulers),
+    collective_call(acc, lambda: torch.save(training_state(acc, models, optimizers, schedulers,extensions),
                                           temporary / 'training.pt'), main_only=True)
     collective_call(acc, lambda: torch.save(progress, temporary / f'rank-{acc.process_index}.pt'))
 
@@ -185,7 +190,7 @@ def read_progress(path, rank):
     return torch.load(Path(path) / f'rank-{rank}.pt', map_location='cpu', weights_only=False)
 
 
-def load_checkpoint(acc, path, config, models, optimizers, schedulers):
+def load_checkpoint(acc, path, config, models, optimizers, schedulers, extensions=None):
     def load():
         manifest = verify_checkpoint(path)
         progress = read_progress(path, acc.process_index)
@@ -195,25 +200,31 @@ def load_checkpoint(acc, path, config, models, optimizers, schedulers):
         state = torch.load(Path(path) / 'training.pt', map_location='cpu', weights_only=False)
         if state.get('kind') != CHECKPOINT_KIND or state.get('update_rule') != UPDATE_RULE:
             raise ValueError('Incompatible DiMO optimizer/model state: v3 state required')
+        if set(state['models'])!=set(models) or set(state['optimizers'])!=set(optimizers) or set(state['schedulers'])!=set(schedulers):
+            raise ValueError('Incompatible model/optimizer/scheduler roles')
+        if extensions is not None:
+            extensions.validate_state(state.get('loss_state',{}),progress.get('loss_rank_state',{}),progress['global_step'])
+        elif 'loss_state' in state:raise ValueError('Optional loss checkpoint requires its configured runtime')
         for key, model in models.items():
             acc.unwrap_model(model).load_state_dict(state['models'][key], strict=True)
         for key, optimizer in optimizers.items():
             optimizer.load_state_dict(state['optimizers'][key])
         for key, scheduler in schedulers.items():
             scheduler.load_state_dict(state['schedulers'][key])
+        if extensions is not None:extensions.load_state(state['loss_state'],progress['loss_rank_state'],progress['global_step'])
         restore_rng(progress['rng'])
         return progress
     return collective_call(acc, load)
 
 
-def check_roundtrip(acc, path, config, models, optimizers, schedulers):
-    before = state_digest(training_state(acc, models, optimizers, schedulers))
-    rng_before = state_digest(rng_state())
-    progress = load_checkpoint(acc, path, config, models, optimizers, schedulers)
+def check_roundtrip(acc, path, config, models, optimizers, schedulers, extensions=None):
+    before = state_digest(training_state(acc, models, optimizers, schedulers,extensions))
+    rng_before = state_digest((rng_state(),extensions.rank_state() if extensions is not None else None))
+    progress = load_checkpoint(acc, path, config, models, optimizers, schedulers,extensions)
     def compare():
-        if before != state_digest(training_state(acc, models, optimizers, schedulers)):
+        if before != state_digest(training_state(acc, models, optimizers, schedulers,extensions)):
             raise RuntimeError('Checkpoint reload changed Student/Auxiliary/EMA/optimizer/scheduler')
-        if rng_before != state_digest(rng_state()):
+        if rng_before != state_digest((rng_state(),extensions.rank_state() if extensions is not None else None)):
             raise RuntimeError('Checkpoint RNG reload differs')
     collective_call(acc, compare)
     return progress

@@ -16,7 +16,7 @@ HISTORICAL_DEFAULTS = dict(FREEZE_DEFAULTS, noise_emb_perturb=0.0, lr_scheduler=
 PATH_ENV = {'SFT_RUN_DIR':'sft_run_dir', 'DIMO_TEACHER_DIR':'teacher_transformer_dir',
             'BASE_MODEL_DIR':'base_model_dir', 'DIMO_OUTPUT_DIR':'output_dir',
             'DIMO_MANIFEST':'data_manifest', 'INTER_EDIT_ROOT':'inter_edit_root',
-            'MAGICBRUSH_ROOT':'magicbrush_root'}
+            'MAGICBRUSH_ROOT':'magicbrush_root', 'DIMO_PARENT_CHECKPOINT':'parent_checkpoint'}
 
 
 def resolve_config(path, environ=None):
@@ -28,7 +28,7 @@ def resolve_config(path, environ=None):
     for env,key in PATH_ENV.items():
         if env in environ: c[key]=environ[env]
     for key in ('base_model_dir','output_dir','sft_run_dir','teacher_transformer_dir',
-                'data_manifest','inter_edit_root','magicbrush_root','cache_dir'):
+                'data_manifest','inter_edit_root','magicbrush_root','cache_dir','parent_checkpoint'):
         if c.get(key): c[key]=str(Path(c[key]).expanduser().resolve())
     if c.get('data_roots'):
         c['data_roots']={k:str(Path(v).expanduser().resolve()) if v else '' for k,v in c['data_roots'].items()}
@@ -37,6 +37,15 @@ def resolve_config(path, environ=None):
 
 def validate_config(c):
     from src.dimo.checkpoint import microbatches_per_update
+    from src.dimo.losses import validate_losses
+    validate_losses(c)
+    if c.get('gt_ce_weight',0) or c.get('spatial_gan',{}).get('enabled',False):
+        required=dict(teacher_cfg=6.,student_cfg=1.,auxiliary_cfg=1.,student_lr=1e-6,auxiliary_lr=1e-6,
+            noise_emb_perturb=.3,lr_scheduler='constant_with_warmup',lr_warmup_steps=100,
+            freeze_student_embedding=True,freeze_student_mlm_head=True,
+            freeze_auxiliary_embedding=True,freeze_auxiliary_mlm_head=True,
+            training_sparse_target_halo=1,training_supervise_target_halo=True)
+        if any(c.get(k)!=v for k,v in required.items()):raise ValueError('Optional losses require the current v3 recipe')
     validate_monitoring(c)
     for key in ('micro_batch','gradient_accumulation','max_steps','resolution','save_every','preflight_steps'):
         if type(c[key]) is not int or c[key]<1:raise ValueError(f'{key} must be a positive integer')
@@ -68,12 +77,13 @@ def validate_config(c):
     if not c.get('expected_profile',{}).get('sparse_target'):raise ValueError('Require explicit sparse Teacher profile')
     for key in ('base_model_dir','output_dir'):
         if not c.get(key):raise ValueError(f'Explicit {key} is required')
-    sources=[k for k in ('sft_run_dir','teacher_transformer_dir','teacher_hf') if c.get(k)]
+    sources=[k for k in ('sft_run_dir','teacher_transformer_dir','teacher_hf','parent_checkpoint') if c.get(k)]
     if len(sources)!=1:raise ValueError('Select exactly one explicit Teacher source')
     base=Path(c['base_model_dir']).resolve()
     if not base.is_dir():raise FileNotFoundError(base)
     out=Path(c['output_dir']).resolve()
     protected=[base]
+    if c.get('parent_checkpoint'):protected.append(Path(c['parent_checkpoint']).resolve().parent)
     if c.get('sft_run_dir'): protected.append(Path(c['sft_run_dir']).resolve())
     if c.get('teacher_transformer_dir'): protected.append(Path(c['teacher_transformer_dir']).resolve())
     if c.get('teacher_hf'):
