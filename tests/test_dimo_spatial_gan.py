@@ -10,7 +10,7 @@ from src.dimo.spatial_gan import (TeacherFeatures,RegionalDiscriminator,GANRando
     restore_and_average,expected_embedding,real_embedding,mask_embedding,adversarial_generator)
 from src.sparse_utils import prepare_sparse_target_layout
 from src.dimo.optimization import configure_trainability
-from src.dimo.checkpoint import save_checkpoint,load_checkpoint,training_state,state_digest,rng_state
+from src.dimo.checkpoint import save_checkpoint,load_checkpoint,training_state,state_digest,rng_state,restore_rng
 
 
 @pytest.fixture
@@ -109,6 +109,25 @@ def test_warmup_uses_stage_counter_and_exact_first_boundary(case,monkeypatch):
     extension.phase_step=200;assert extension.student_active() and extension.needs_calibration()
     with pytest.raises(ValueError,match='phase counter'):
         train.run_update(c.acc,c.teacher,c.models,c.optimizers,c.schedulers,batch,c.sampler,c.config,True,global_step=8000,extensions=extension)
+
+
+def test_gan_warmup_preserves_original_v3_update_data_and_sampling_rng(case,monkeypatch):
+    c=case;extension,batch=prepare_gan(c,monkeypatch)
+    initial=copy.deepcopy(training_state(c.acc,c.models,c.optimizers,c.schedulers));random=rng_state()
+    def shared_state():
+        models={k:c.models[k] for k in ['student','auxiliary','ema']}
+        opts={k:c.optimizers[k] for k in ['student','auxiliary']}
+        sched={k:c.schedulers[k] for k in ['student','auxiliary']}
+        return state_digest(training_state(c.acc,models,opts,sched))
+    expected=train.run_update(c.acc,c.teacher,c.models,c.optimizers,c.schedulers,batch,c.sampler,c.config,True,global_step=0)
+    state=shared_state();rng=state_digest(rng_state());positions=list(c.positions)
+    for role,model in c.models.items():model.load_state_dict(initial['models'][role])
+    for role,opt in c.optimizers.items():opt.load_state_dict(initial['optimizers'][role])
+    for role,sched in c.schedulers.items():sched.load_state_dict(initial['schedulers'][role])
+    c.positions.clear();restore_rng(random)
+    actual=train.run_update(c.acc,c.teacher,c.models,c.optimizers,c.schedulers,batch,c.sampler,c.config,True,global_step=0,extensions=extension)
+    assert expected['student']==actual['student'] and expected['auxiliary']==actual['auxiliary']
+    assert shared_state()==state and state_digest(rng_state())==rng and c.positions==positions
 
 
 @pytest.mark.parametrize('joint',[False,True])
