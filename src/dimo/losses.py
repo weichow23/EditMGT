@@ -19,6 +19,9 @@ def validate_losses(c):
     if gt and gan.get('enabled',False):raise ValueError('GT CE and Spatial GAN cannot be enabled together')
     if gt and mode!='v3_gt_ce':raise ValueError('GT CE requires training_mode=v3_gt_ce')
     if gan.get('enabled',False) and mode!='v3_spatial_gan':raise ValueError('GAN requires training_mode=v3_spatial_gan')
+    if gan.get('enabled',False):
+        from src.dimo.gan_runtime import gan_options
+        gan_options(c)
     initialization=c.get('initialization','sft')
     if initialization not in ('sft','finetune'):raise ValueError('initialization must be sft or finetune; strict resume uses --resume')
     if bool(c.get('parent_checkpoint'))!=(initialization=='finetune'):
@@ -67,7 +70,7 @@ class OptionalLosses:
         if not torch.equal(conditions['target_edit_mask'],original):raise ValueError('Transformer must receive M, never expanded G')
         return region_token_ce(logits,self.target_tokens(source),original)
 
-    def student_loss(self,fkl,logits,prepared):
+    def student_loss(self,fkl,logits,prepared,raw_logits=None):
         if self.weight is None:raise RuntimeError('Calibrate GT weight before the first optimizer update')
         gt=self.unweighted_loss(logits,prepared)
         self.records.setdefault('fkl',[]).append(fkl.detach())
@@ -95,7 +98,9 @@ class OptionalLosses:
 
 def build_losses(config,vq,teacher,device):
     validate_losses(config)
-    if config.get('spatial_gan',{}).get('enabled',False):raise ValueError('Spatial GAN runtime is not installed')
+    if config.get('spatial_gan',{}).get('enabled',False):
+        from src.dimo.gan_runtime import SpatialLosses
+        return SpatialLosses(config,vq,teacher,device)
     value=config.get('gt_ce_weight',0.)
     if value=='auto' or value>0:return OptionalLosses(config,vq,teacher,device)
     return None

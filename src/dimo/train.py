@@ -133,7 +133,9 @@ def run_update(acc, teacher, models, optimizers, schedulers, batch_fn, sampler, 
     for opt in optimizers.values():
         opt.zero_grad(set_to_none=True)
     losses = dict(student=[], auxiliary=[], microbatches=consumed)
-    if extensions is not None:extensions.records={}
+    if extensions is not None:
+        if global_step is not None and extensions.phase_step!=global_step:raise ValueError('Optional loss phase counter must follow this new training stage')
+        extensions.records={}
 
     cuda = acc.device.type == 'cuda'
     if cuda:torch.cuda.reset_peak_memory_stats(acc.device)
@@ -151,19 +153,24 @@ def run_update(acc, teacher, models, optimizers, schedulers, batch_fn, sampler, 
                     teacher_cfg=c.get('teacher_cfg',4.0), noise_emb_perturb=c.get('noise_emb_perturb',0.0), **options)
             if active:
                 if len(captured)!=1:raise RuntimeError('Optional losses must reuse one Student forward')
-                loss_s=extensions.student_loss(loss_s,captured.pop().movedim(1,-1),
-                    (source,original,region,cond,uncond))
+                raw_logits=captured.pop()
+                loss_s=extensions.student_loss(loss_s,raw_logits.movedim(1,-1),
+                    (source,original,region,cond,uncond),raw_logits=raw_logits)
+            elif extensions is not None:extensions.records.setdefault('fkl',[]).append(loss_s.detach())
         require_finite(loss_s,'Nonfinite Student loss')
         acc.backward(loss_s / accumulation)
         if preflight:
             assert_gradients(teacher, 'Teacher', False)
             assert_gradients(ema, 'EMA', False)
             assert_gradients(auxiliary, 'Aux during Student backward', False)
+            if extensions is not None and hasattr(extensions,'discriminator'):
+                assert_gradients(extensions.discriminator,'Discriminator during Student backward',False)
             assert_gradients(student, 'Student', True)
             _, sampled, q, _ = payload
             if not torch.equal(sampled[~region], source[~region]) or (q & ~region).any():
                 raise RuntimeError('Source token hard lock / pseudo-mask subset failed')
         losses['student'].append(loss_s.detach())
+        if active:del raw_logits
     # Official generator clipping is conditional on mixed precision. Aux has no clipping.
     norm = None
     if '16' in c.get('mixed_precision', 'no') and c.get('max_grad_norm', 1.) > 0:
@@ -189,9 +196,16 @@ def run_update(acc, teacher, models, optimizers, schedulers, batch_fn, sampler, 
             source, original, region, cond, _ = batch_fn()
             with acc.autocast():
                 with torch.no_grad():
-                    sampled = generate_one_step(acc.unwrap_model(student), source, original,
-                        teacher.config.vocab_size - 1, cond, r_init=r_init,
-                        noise_emb_perturb=c.get('noise_emb_perturb',0.0))
+                    if extensions is not None and hasattr(extensions,'discriminator'):
+                        logits,sampled=generate_one_step(acc.unwrap_model(student),source,original,
+                            teacher.config.vocab_size-1,cond,r_init=r_init,return_logits=True,
+                            noise_emb_perturb=c.get('noise_emb_perturb',0.0))
+                        extensions.remember_auxiliary(logits,sampled,(source,original,region,cond,None))
+                        del logits
+                    else:
+                        sampled = generate_one_step(acc.unwrap_model(student), source, original,
+                            teacher.config.vocab_size - 1, cond, r_init=r_init,
+                            noise_emb_perturb=c.get('noise_emb_perturb',0.0))
                     if telemetry is not None and telemetry.token_due:
                         telemetry.tokens('aux_targets',sampled,region)
                     ratio = sampler.sample(len(source), acc.device)
@@ -218,6 +232,8 @@ def run_update(acc, teacher, models, optimizers, schedulers, batch_fn, sampler, 
         schedulers['auxiliary'].step()
         losses['auxiliary'].append(round_losses)
     losses['auxiliary_peak_bytes']=torch.cuda.max_memory_allocated(acc.device) if cuda else None
+    if extensions is not None and hasattr(extensions,'discriminator'):
+        extensions.discriminator_update(acc,models,optimizers,schedulers,preflight)
     losses['ema_decay'] = update_ema(ema, acc.unwrap_model(student), c['ema_decay'],
                                     global_step=(global_step+c.get('parent_metadata',{}).get('ema_age_base',0)) if c.get('ema_warmup', False) else None)
     if extensions is not None:
@@ -365,6 +381,8 @@ def main():
     stream = dataset_stream(c, tokenizer, acc, consumed)
     from src.dimo.losses import build_losses
     extensions=build_losses(c,vq,teacher,acc.device)
+    if extensions is not None and hasattr(extensions,'discriminator'):
+        extensions.attach(acc,models,optimizers,schedulers)
     if resume:
         load_checkpoint(acc, resume, c, models, optimizers, schedulers,extensions=extensions)
     sampler = MaskRatioSampler()
@@ -384,21 +402,32 @@ def main():
         return prepared
     import time
     while step < c['max_steps']:
-        if extensions is not None and extensions.needs_calibration():
+        calibration_due=extensions is not None and extensions.needs_calibration()
+        diagnostic_due=extensions is not None and hasattr(extensions,'needs_diagnostic') and extensions.needs_diagnostic()
+        if calibration_due or diagnostic_due:
             from src.dimo.calibration import calibrate
             shadow=dataset_stream(c,tokenizer,acc,stream.consumed)
             def calibration_batch():
                 raw,prepared=prepare_next_batch(acc,shadow,encoders,vq,empty,teacher)
                 extensions.bind_batch(raw,prepared)
                 return prepared
-            result=calibrate(acc,teacher,models,calibration_batch,sampler,c,extensions)
-            collective_call(acc,lambda:write_json(out/f'calibration-step{step}.json',result),main_only=True)
+            result=calibrate(acc,teacher,models,calibration_batch,sampler,c,extensions,update_weight=calibration_due)
+            label='calibration' if calibration_due else 'gradient-diagnostic'
+            collective_call(acc,lambda:write_json(out/f'{label}-step{step}.json',result),main_only=True)
         started = time.monotonic()
         checking = step < (state['global_step'] + c['preflight_steps'] if resume else c['preflight_steps'])
         telemetry=Telemetry(c,step,acc.device,teacher.config.codebook_size)
         try:
             losses = run_update(acc, teacher, models, optimizers, schedulers, batch_fn, sampler, c, checking,
                                 global_step=step,telemetry=telemetry,extensions=extensions)
+            if extensions is not None and (telemetry.loss_due or telemetry.grad_due):
+                for name,values in extensions.records.items():
+                    telemetry.add_sum('optional/'+name,sum(values)/len(values))
+                if hasattr(extensions,'diagnostic_history') and extensions.diagnostic_history:
+                    latest=extensions.diagnostic_history[-1]
+                    if latest['phase_step']==step:
+                        telemetry.add_sum('optional/GAN_FKL_parameter_ratio',latest['weighted_parameter_ratio'])
+                        telemetry.add_sum('optional/GAN_FKL_parameter_cosine',latest['parameter_cosine'])
             telemetry.publish(acc,out,losses,optimizers,time.monotonic()-started)
         except Exception as error:
             if isinstance(error,torch.cuda.OutOfMemoryError):

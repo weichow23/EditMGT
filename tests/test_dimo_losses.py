@@ -100,6 +100,6 @@ def test_auto_calibration_no_update_rng_preserved(case,monkeypatch):
     c=case;extension,batch=prepare_gt(c,monkeypatch,weight='auto')
     before=state_digest(training_state(c.acc,c.models,c.optimizers,c.schedulers));random=state_digest(rng_state())
     result=calibrate(c.acc,c.teacher,c.models,batch,c.sampler,c.config,extension)
-    assert result['weight']>0 and result['weighted_parameter_ratio']==.15
+    assert result['weight']>0 and result['weighted_parameter_ratio']==pytest.approx(.15)
     assert state_digest(training_state(c.acc,c.models,c.optimizers,c.schedulers))==before
     assert state_digest(rng_state())==random and extension.phase_step==0
