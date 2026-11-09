@@ -910,3 +910,11 @@ The DiMO adapter reuses EditMGT's data order, prompts, masks, GPU sharding and m
 ```
 
 These examples select L1/L2; use the benchmark-specific metric options above for full scoring. Add `--num-gpus N` and `--bf16` explicitly when needed. `--backend teacher` retains the original benchmark defaults, including Halo=0; choose Teacher steps/CFG and a shared composition policy explicitly for comparisons. See [the Region-DiMO guide](docs/region_dimo.md) for checkpoint and configuration details.
+
+### Optional v3 training objectives
+
+Region-DiMO v3 supports independently enabled original-mask GT token CE and
+spatial Teacher-feature GAN training. Both are disabled in the existing v3
+preset; the original sparse attention, Halo, cache and one-step inference
+remain unchanged. See [configuration, initialization and resume commands](docs/dimo_losses.md)
+and [validation results and current limits](docs/dimo_losses_validation.md).

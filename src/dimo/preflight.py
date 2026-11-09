@@ -3,6 +3,7 @@ import argparse,json
 from src.dimo.config import resolve_config,validate_config,source_metadata
 from src.dimo.origin import select_teacher
 from src.dimo.infer import validate_base_components
+from src.dimo.initialization import parent_metadata,parent_teacher
 
 
 def main():
@@ -12,7 +13,8 @@ def main():
     c=resolve_config(args.config)
     validate_config(c)
     validate_base_components(c['base_model_dir'])
-    model,origin=select_teacher(c)
+    parent_metadata(c)
+    model,origin=parent_teacher(c) if c.get('initialization')=='finetune' else select_teacher(c)
     if c.get('data_manifest'):
         from src.dimo.manifest_data import ManifestDataset
         # Structural/path validation is independent of text encoder allocation.
